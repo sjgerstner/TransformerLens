@@ -1629,6 +1629,8 @@ class ProcessWeights:
             state_dict = ProcessWeights.refactor_factored_attn_matrices(
                 state_dict, cfg, adapter=adapter
             )
+        if refactor_glu and self.gated_mlp:
+            state_dict = ProcessWeights.refactor_glu(state_dict, cfg, adapter=adapter)
 
         # Downcast back to original dtypes
         for k, orig_dtype in original_dtypes.items():
@@ -1802,6 +1804,54 @@ class ProcessWeights:
                 W_O_key, utils.transpose(Vh), cfg, adapter, l
             )
 
+        return state_dict
+
+    @staticmethod
+    def refactor_glu(state_dict: Dict[str, torch.Tensor], cfg, adapter=None) -> Dict[str, torch.Tensor]:
+        """Adapt the signs of w_in and w_out vectors of neurons
+        such that w_in has a non-negative similarity to w_gate.
+        Only applicable if the model uses a GLU variant (such as SwiGLU), aka gated MLPs.
+        Gives a warning otherwise.
+
+        Args:
+            state_dict (Dict[str, torch.Tensor]): The current state dict
+            
+        Returns: new state_dict
+        """
+        # Make a deep copy to avoid modifying the original
+        state_dict = {
+            k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in state_dict.items()
+        }
+        #TODO already check this in process_weights?
+        if not self.cfg.gated_mlp:#TODO should also warn in the case of bilinear MLPs
+            logging.warning(
+                "Attempting to refactor gated MLP weights,"
+                "but in this model MLPs are not gated. Skipping..."
+            )
+            return state_dict
+        for l in range(self.cfg.n_layers):
+            #get keys
+            W_gate_key = ProcessWeights._get_param_key(f'blocks.{l}.mlp.W_gate', adapter)
+            W_in_key = ProcessWeights._get_param_key(f'blocks.{l}.mlp.W_in', adapter)
+            b_in_key = ProcessWeights._get_param_key(f'blocks.{l}.mlp.b_in', adapter)
+            W_out_key = ProcessWeights._get_param_key(f'blocks.{l}.mlp.W_out', adapter)
+            #get weight matrices
+            W_gate = ProcessWeights.convert_tensor_to_tl_format(W_gate_key, state_dict, state_dict.get(W_gate_key), cfg, adapter, layer)
+            W_in = ProcessWeights.convert_tensor_to_tl_format(W_in_key, state_dict, state_dict.get(W_in_key), cfg, adapter, layer)
+            b_in = ProcessWeights.convert_tensor_to_tl_format(b_in_key, state_dict, state_dict.get(b_in_key), cfg, adapter, layer)
+            W_out = ProcessWeights.convert_tensor_to_tl_format(W_out_key, state_dict, state_dict.get(W_out_key), cfg, adapter, layer)
+            #the real thing
+            sign_to_adapt = torch.sign(einops.einsum(
+                W_gate, W_in,
+                "d n, d n -> n"
+            ))
+            W_in *= sign_to_adapt.unsqueeze(0)
+            b_in *= sign_to_adapt
+            W_out *= sign_to_adapt.unsqueeze(1)
+            #copy back into state_dict
+            state_dict[W_in_key] = ProcessWeights.convert_tensor_to_hf_format(W_in_key, W_in, cfg, adapter, l)
+            state_dict[b_in_key] = ProcessWeights.convert_tensor_to_hf_format(b_in_key, b_in, cfg, adapter, l)
+            state_dict[W_out_key] = ProcessWeights.convert_tensor_to_hf_format(W_out_key, W_out, cfg, adapter, l)
         return state_dict
 
     @overload

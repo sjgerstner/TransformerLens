@@ -695,6 +695,7 @@ class TransformerBridge(HookIntrospectionMixin, nn.Module):
         center_unembed: bool = True,
         fold_value_biases: bool = True,
         refactor_factored_attn_matrices: bool = False,
+        refactor_glu: bool = False,
     ) -> None:
         """Apply HookedTransformer-equivalent weight processing and legacy hook compatibility.
 
@@ -752,6 +753,7 @@ class TransformerBridge(HookIntrospectionMixin, nn.Module):
                     center_unembed=center_unembed,
                     fold_value_biases=fold_value_biases,
                     refactor_factored_attn_matrices=refactor_factored_attn_matrices,
+                    refactor_glu=refactor_glu,
                 )
         finally:
             # Re-initialize hooks even on failure so bridge stays usable
